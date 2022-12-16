@@ -1,0 +1,372 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'Food App'
+
+Resources:
+  FoodUserPool:
+    Type: "AWS::Cognito::UserPool"
+    Properties:
+      Schema:
+        -
+          Mutable: true
+          Name: email
+          Required: true
+
+      AdminCreateUserConfig:
+        AllowAdminCreateUserOnly: false
+      
+      EmailConfiguration:
+        EmailSendingAccount: COGNITO_DEFAULT
+      AutoVerifiedAttributes:
+        - email
+      UsernameAttributes:
+        - email
+      UsernameConfiguration:
+        CaseSensitive: False
+
+  WebClient:
+    Type: "AWS::Cognito::UserPoolClient"
+    Properties: 
+      ClientName: FoodWeb
+      GenerateSecret: False
+      RefreshTokenValidity: 30
+      UserPoolId: !Ref FoodUserPool
+      CallbackURLs:
+        - http://localhost:3000/      
+      LogoutURLs:
+        - http://localhost:3000/
+      AllowedOAuthFlows:
+        - code
+        - implicit
+      AllowedOAuthFlowsUserPoolClient: true
+      AllowedOAuthScopes:
+        - email
+        - openid
+        - phone
+        - profile
+        - aws.cognito.signin.user.admin
+      SupportedIdentityProviders:
+        - COGNITO
+      
+  ProcessClient:
+    Type: "AWS::Cognito::UserPoolClient"
+    DependsOn: FoodResourceServer
+    Properties: 
+      ClientName: FoodProcess
+      GenerateSecret: true
+      RefreshTokenValidity: 30
+      UserPoolId: !Ref FoodUserPool
+      AllowedOAuthFlowsUserPoolClient: true
+      CallbackURLs:
+        - http://localhost:3000/      
+      LogoutURLs:
+        - http://localhost:3000/
+      AllowedOAuthFlows:
+        - client_credentials
+      AllowedOAuthScopes:
+       - identity/Food   
+      SupportedIdentityProviders:
+        - COGNITO   
+
+      
+  PoolDomain:
+    Type: AWS::Cognito::UserPoolDomain
+    Properties: 
+      Domain: foodidentity
+      UserPoolId: !Ref FoodUserPool
+
+  FoodAPI:    
+    Type: "AWS::ApiGateway::RestApi"
+    Properties:
+      Name: !Sub "${AWS::StackName}_API"
+      Description: "Food API"
+
+  APIDeployment:
+    Type: "AWS::ApiGateway::Deployment"
+    Properties:
+      StageName: Dev
+      RestApiId: !Ref FoodAPI   
+    DependsOn:
+      - "FoodAnyMethod"
+  
+  UserAuthorizer:
+    Type: AWS::ApiGateway::Authorizer
+    Properties: 
+      AuthType: cognito_user_pools
+      IdentitySource: method.request.header.Authorization
+      Name: !Sub auth_${AWS::StackName}
+      ProviderARNs:
+        - !GetAtt FoodUserPool.Arn
+      RestApiId:
+        Ref: FoodAPI
+      Type: COGNITO_USER_POOLS
+  
+  FoodResource:
+    Type: AWS::ApiGateway::Resource
+    Properties: 
+      ParentId: !GetAtt 
+        - FoodAPI
+        - RootResourceId
+      PathPart: food
+      RestApiId: !Ref FoodAPI
+  
+  VendorResource:
+    Type: AWS::ApiGateway::Resource
+    Properties: 
+      ParentId: !GetAtt 
+        - FoodAPI
+        - RootResourceId
+      PathPart: vendor
+      RestApiId: !Ref FoodAPI
+
+  FoodAnyMethod:
+    Type: "AWS::ApiGateway::Method"
+    Properties:
+      AuthorizationType: COGNITO_USER_POOLS 
+      AuthorizerId: 
+        Ref: UserAuthorizer
+      HttpMethod: "ANY"
+      Integration:
+        IntegrationHttpMethod: "POST"
+        Type: "AWS_PROXY"
+        Uri: !Sub
+          - "arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${lambdaArn}/invocations"
+          - lambdaArn: !GetAtt FoodLambda.Arn
+      ResourceId: !Ref FoodResource     
+      RestApiId: !Ref FoodAPI 
+
+  FoodOptionsMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      AuthorizationType: NONE
+      RestApiId:
+        Ref: FoodAPI
+      ResourceId:
+        Ref: FoodResource
+      HttpMethod: OPTIONS
+      Integration:
+        IntegrationResponses:
+        - StatusCode: 200
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Headers: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token'"
+            method.response.header.Access-Control-Allow-Methods: "'POST,OPTIONS'"
+            method.response.header.Access-Control-Allow-Origin: "'*'"
+          ResponseTemplates:
+            application/json: ''
+        PassthroughBehavior: WHEN_NO_MATCH
+        RequestTemplates:
+          application/json: '{"statusCode": 200}'
+        Type: MOCK
+      MethodResponses:
+      - StatusCode: 200
+        ResponseModels:
+          application/json: 'Empty'
+        ResponseParameters:
+            method.response.header.Access-Control-Allow-Headers: false
+            method.response.header.Access-Control-Allow-Methods: false
+            method.response.header.Access-Control-Allow-Origin: false 
+
+
+  FoodResourceServer:
+    Type: AWS::Cognito::UserPoolResourceServer
+    Properties: 
+      UserPoolId: !Ref FoodUserPool 
+      Identifier: identity
+      Name: FoodResourceServer 
+      Scopes:
+        -
+          ScopeName: Food
+          ScopeDescription: Ability to access food list 
+
+  VendorAnyMethod:
+    Type: "AWS::ApiGateway::Method"
+    DependsOn: FoodResourceServer
+    Properties:
+      AuthorizationType: COGNITO_USER_POOLS 
+      AuthorizerId: 
+        Ref: UserAuthorizer
+      AuthorizationScopes:
+        - 
+          identity/Food
+      HttpMethod: "ANY"
+      Integration:
+        IntegrationHttpMethod: "POST"
+        Type: "AWS_PROXY"
+        Uri: !Sub
+          - "arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${lambdaArn}/invocations"
+          - lambdaArn: !GetAtt VendorLambda.Arn
+      ResourceId: !Ref VendorResource     
+      RestApiId: !Ref FoodAPI 
+
+  VendorOptionsMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      AuthorizationType: NONE
+      RestApiId:
+        Ref: FoodAPI
+      ResourceId:
+        Ref: VendorResource
+      HttpMethod: OPTIONS
+      Integration:
+        IntegrationResponses:
+        - StatusCode: 200
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Headers: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token'"
+            method.response.header.Access-Control-Allow-Methods: "'POST,OPTIONS'"
+            method.response.header.Access-Control-Allow-Origin: "'*'"
+          ResponseTemplates:
+            application/json: ''
+        PassthroughBehavior: WHEN_NO_MATCH
+        RequestTemplates:
+          application/json: '{"statusCode": 200}'
+        Type: MOCK
+      MethodResponses:
+      - StatusCode: 200
+        ResponseModels:
+          application/json: 'Empty'
+        ResponseParameters:
+            method.response.header.Access-Control-Allow-Headers: false
+            method.response.header.Access-Control-Allow-Methods: false
+            method.response.header.Access-Control-Allow-Origin: false 
+
+  FoodPermission:
+    Type: "AWS::Lambda::Permission"
+    Properties:
+      Action: "lambda:InvokeFunction"
+      FunctionName: !GetAtt "FoodLambda.Arn"
+      Principal: "apigateway.amazonaws.com"
+      SourceArn: !Sub "arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${FoodAPI}/*/*/food"
+  
+  VendorPermission:
+    Type: "AWS::Lambda::Permission"
+    Properties:
+      Action: "lambda:InvokeFunction"
+      FunctionName: !GetAtt "VendorLambda.Arn"
+      Principal: "apigateway.amazonaws.com"
+      SourceArn: !Sub "arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${FoodAPI}/*/*/vendor"
+
+  FoodLambda:
+    Type: AWS::Lambda::Function
+    Properties:      
+      Code:
+          ZipFile: |
+            import random
+            foods = ['dougnut', 'pizza', 'coffee', 'quinoa', 'sushi']
+
+            def handler(event, context):
+              food = foods[random.randrange(0, 5)]
+              return {
+                  'statusCode': 200,
+                  'body': food,
+                  'headers': {
+                      'Content-Type': 'application/json',
+                      'Access-Control-Allow-Origin': "*",
+                  }
+              }
+
+            def vendor(event, context):
+              return {
+                'statusCode': 200,
+                'body': foods,
+                'headers': {                    
+                    'Content-Type': 'application/json',
+                    'Access-Control-Allow-Origin': "*",
+                }
+              }
+      Description: "Food lambda"
+      Handler: "index.handler"
+      Role: !GetAtt FoodLambdaExecRole.Arn
+      Runtime: python3.7
+      Timeout: 20  
+
+  VendorLambda:
+    Type: AWS::Lambda::Function
+    Properties:      
+      Code:
+          ZipFile: |
+            import random
+            import json
+            foods = ['dougnut', 'pizza', 'coffee', 'quinoa', 'sushi']
+            def handler(event, context):
+              return {
+                'statusCode': 200,
+                'body': json.dumps(foods),
+                'headers': {                    
+                    'Content-Type': 'application/json',
+                    'Access-Control-Allow-Origin': "*",
+                }
+              }
+      Description: "Food lambda"
+      Handler: "index.handler"
+      Role: !GetAtt FoodLambdaExecRole.Arn
+      Runtime: python3.7
+      Timeout: 20   
+
+  FoodLambdaExecRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument: 
+        Version: "2012-10-17"
+        Statement:
+          -
+            Effect: "Allow"
+            Principal:
+              Service:
+                - "lambda.amazonaws.com" 
+            Action: 
+              - "sts:AssumeRole"
+      Description: App Lambda execution policy
+      Path: /
+      Policies: 
+        - 
+          PolicyName: "FoodLambdaPolicies"
+          PolicyDocument: 
+            Version: "2012-10-17"
+            Statement: 
+              - 
+                Effect: "Allow"
+                Action: 
+                  - "logs:PutLogEvents"
+                  - "logs:CreateLogStream"
+                Resource: "*" # clean this up in all roles
+              - 
+                Effect: "Allow"
+                Action:
+                  - "logs:CreateLogGroup"
+                Resource: "*"  
+
+
+Outputs:
+  appconfigjs:
+    Description: AppConfig.js file for configuring the React app
+    Value: !Sub >
+      app_config = {
+        Auth: {
+          region: 'us-west-2',
+          userPoolId: '${FoodUserPool}',
+          userPoolWebClientId: '${WebClient}'
+        },
+        API: {
+            endpoints: [
+                {
+                    name: 'training',
+                    endpoint: 'https://${FoodAPI}.execute-api.us-west-2.amazonaws.com/Dev/'
+                }
+            ]
+        },
+      }
+  connectionssettingspy:
+    Description: ConnectionSettings.py for configuring the machine to machine client.
+    Value: !Sub >
+      app_client_id = '${ProcessClient}'
+      app_client_secret = 
+
+      TOKEN_ENDPOINT = 'https://foodidentity.auth.us-west-2.amazoncognito.com/oauth2/token'
+      API_ENDPOINT = 'https://${FoodAPI}.execute-api.us-west-2.amazonaws.com/Dev/vendor'
+  secretcommand:
+    Description: Run this command to get the client secret
+    Value: !Sub >
+      aws cognito-idp describe-user-pool-client --user-pool-id ${FoodUserPool} --client-id ${ProcessClient} --query UserPoolClient.ClientSecret
+
+# aws cloudformation create-stack --stack-name training --template-body file://Food.yaml --capabilities CAPABILITY_IAM
+
+# aws cloudformation describe-stacks | jq -r '.Stacks []| select(.StackName == "training") | .Outputs[].OutputValue'
